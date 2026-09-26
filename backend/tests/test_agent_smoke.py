@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from iccha.config import get_settings
+from iccha.models import GooglePlaceCandidate
 from iccha.prompts import PHASE1_SYSTEM_PROMPT, PHASE3_SYSTEM_PROMPT
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -72,6 +73,8 @@ def test_iccha_agent_instantiates(valid_env):
         agent = IcchaAgent()
         assert agent is not None
         assert agent.profile.shop_name == "मेरी दुकान"
+        assert agent.profile.temp_slug is not None
+        assert agent.profile.temp_url.startswith("/temp/")
 
 
 def test_iccha_agent_has_all_phase3_tools(valid_env):
@@ -81,7 +84,11 @@ def test_iccha_agent_has_all_phase3_tools(valid_env):
 
         agent = IcchaAgent()
         assert hasattr(agent, "lookup_business")
+        assert hasattr(agent, "select_google_place")
+        assert hasattr(agent, "set_google_review_preference")
+        assert hasattr(agent, "set_business_type")
         assert hasattr(agent, "add_product")
+        assert hasattr(agent, "add_offerings_batch")
         assert hasattr(agent, "update_business_info")
         assert hasattr(agent, "finalize_website")
 
@@ -107,7 +114,7 @@ async def test_lookup_business_updates_profile(valid_env):
 
 
 @pytest.mark.asyncio
-async def test_add_product_and_finalize(valid_env):
+async def test_select_google_place_and_review_pref(valid_env):
     with patch("livekit.agents.inference.LLM") as mock_llm:
         mock_llm.return_value = MagicMock()
         from iccha.agent import IcchaAgent
@@ -115,24 +122,71 @@ async def test_add_product_and_finalize(valid_env):
         agent = IcchaAgent()
         mock_ctx = AsyncMock()
 
-        res1 = await agent.add_product(mock_ctx, name="चावल", price=60.0, unit="kg")
-        assert "चावल" in res1
-        assert len(agent.profile.products) == 1
-        assert agent.profile.products[0].name == "चावल"
-        assert agent.profile.products[0].price == 60.0
+        # Seed candidates
+        agent.profile.google_candidates = [
+            GooglePlaceCandidate(
+                place_id="p1",
+                name="Gupta Mobile Repair",
+                address="Shop 2, Sector 18, Noida",
+                rating=4.7,
+                user_ratings_total=40,
+            ),
+            GooglePlaceCandidate(
+                place_id="p2",
+                name="Gupta Electronics",
+                address="Atta Market, Noida",
+                rating=4.0,
+                user_ratings_total=15,
+            ),
+        ]
 
-        res2 = await agent.update_business_info(
+        res = await agent.select_google_place(mock_ctx, candidate_index=1)
+        assert "Selected option 1" in res
+        assert agent.profile.shop_name == "Gupta Mobile Repair"
+        assert agent.profile.address == "Shop 2, Sector 18, Noida"
+        assert agent.profile.verified_via_places is True
+
+        res_rev = await agent.set_google_review_preference(mock_ctx, wants_help=True)
+        assert agent.profile.wants_google_review_help is True
+
+
+@pytest.mark.asyncio
+async def test_add_services_and_batch_and_finalize(valid_env):
+    with patch("livekit.agents.inference.LLM") as mock_llm:
+        mock_llm.return_value = MagicMock()
+        from iccha.agent import IcchaAgent
+
+        agent = IcchaAgent()
+        mock_ctx = AsyncMock()
+
+        # Set service business type
+        await agent.set_business_type(mock_ctx, business_type="service", category="electronics")
+        assert agent.profile.business_type == "service"
+
+        # Add single service
+        res1 = await agent.add_product(
             mock_ctx,
-            phone="9876543210",
-            category="kirana",
-            open_time="08:00 AM",
-            close_time="10:00 PM",
-            closed_days="Sunday",
+            name="स्क्रीन रिप्लेसमेंट",
+            price=1200.0,
+            unit="सर्विस",
+            item_type="service",
         )
-        assert "updated" in res2.lower()
-        assert agent.profile.phone == "9876543210"
-        assert agent.profile.hours.open_time == "08:00 AM"
+        assert "स्क्रीन रिप्लेसमेंट" in res1
+        assert len(agent.profile.products) == 1
+        assert agent.profile.products[0].item_type == "service"
 
-        res3 = await agent.finalize_website(mock_ctx)
+        # Add batch offerings
+        res_batch = await agent.add_offerings_batch(
+            mock_ctx,
+            items=[
+                {"name": "बैटरी चेंज", "price": 650.0, "unit": "सर्विस", "item_type": "service"},
+                {"name": "चार्जर", "price": 250.0, "unit": "पीस", "item_type": "product"},
+            ],
+        )
+        assert "Added 2 items in batch" in res_batch
+        assert len(agent.profile.products) == 3
+
+        res_final = await agent.finalize_website(mock_ctx)
         assert agent.profile.interview_complete is True
-        assert "finalized" in res3.lower()
+        assert agent.profile.temp_url.startswith("/temp/")
+        assert "finalized" in res_final.lower()

@@ -37,6 +37,8 @@ Pipeline configuration (Phase 1):
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 from pathlib import Path
@@ -55,6 +57,7 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from iccha.agent import IcchaAgent
 from iccha.config import get_settings
+from iccha.models import ProductItem
 from iccha.resampler_patch import apply_resampler_patch
 
 apply_resampler_patch()
@@ -142,18 +145,74 @@ async def iccha_session(ctx: JobContext) -> None:
         expressive=False,
     )
 
+    agent = IcchaAgent()
+
     # Start the session — this warms up models and publishes the agent's
     # audio track to the LiveKit room before ctx.connect() is called.
     await session.start(
-        agent=IcchaAgent(),
+        agent=agent,
         room=ctx.room,
         # No RoomOptions/noise cancellation in Phase 1 — clean baseline.
     )
+
+    # Listen for DataChannel messages from frontend (image upload notifications & extraction)
+    @ctx.room.on("data_received")
+    def on_data_received(dp: Any) -> None:
+        try:
+            raw_bytes = getattr(dp, "data", dp if isinstance(dp, (bytes, bytearray)) else None)
+            if not raw_bytes:
+                return
+            data = json.loads(raw_bytes.decode("utf-8"))
+            msg_type = data.get("type")
+
+            if msg_type == "IMAGE_UPLOAD_STARTED":
+                logger.info("Image upload started from frontend")
+                session.generate_reply(
+                    instructions=(
+                        "The shopkeeper just uploaded an image/photo of their menu or rate list. "
+                        "Acknowledge immediately in respectful Hindi using feminine grammar: "
+                        "'धन्यवाद! मैं अभी इसको देखकर लिस्ट तैयार कर रही हूँ, एक सेकंड रुकिए...'"
+                    )
+                )
+
+            elif msg_type == "IMAGE_ITEMS_EXTRACTED":
+                items = data.get("items", [])
+                logger.info("Received %d extracted items from frontend", len(items))
+                if items:
+                    for it in items:
+                        if not isinstance(it, dict) or not it.get("name"):
+                            continue
+                        itype = "service" if str(it.get("item_type", "")).lower() == "service" else "product"
+                        agent.profile.products.append(
+                            ProductItem(
+                                name=str(it["name"]).strip(),
+                                price=float(it["price"]) if it.get("price") is not None else None,
+                                unit=str(it["unit"]).strip() if it.get("unit") else None,
+                                item_type=itype,
+                                description=str(it.get("description", "")).strip() or None,
+                            )
+                        )
+                    agent._save_temp_site()
+                    asyncio.create_task(agent._broadcast_profile(room_override=ctx.room))
+
+                    names_preview = ", ".join(it["name"] for it in items[:3])
+                    session.generate_reply(
+                        instructions=(
+                            f"We have successfully extracted {len(items)} items from their uploaded image ({names_preview}). "
+                            "In warm Hindi using feminine grammar, tell them you have added these items to their website preview, "
+                            "mention two or three of the items, and ask if they want to add anything else or proceed to shop timings."
+                        )
+                    )
+        except Exception as err:
+            logger.warning("Error processing incoming DataChannel packet: %s", err)
 
     # Join the room — user can now hear and speak to the agent.
     await ctx.connect()
 
     logger.info("Session connected | room=%s", ctx.room.name)
+
+    # Broadcast initial profile so frontend is immediately synchronized
+    await agent._broadcast_profile(room_override=ctx.room)
 
     # Immediately greet the caller in Hindi/English to start the conversation
     session.generate_reply(

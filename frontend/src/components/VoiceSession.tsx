@@ -214,7 +214,7 @@ function VoiceAssistantInner({
           flex: "1 1 380px",
         }}
       >
-        <LiveWebsitePreview profile={profile} />
+        <LiveWebsitePreview profile={profile} onProfileUpdate={setProfile} />
       </div>
     </div>
   );

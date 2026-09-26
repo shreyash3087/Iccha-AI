@@ -15,6 +15,7 @@ async def test_places_unconfigured_fallback():
     result = await lookup_google_places("Gupta Store", "Noida", api_key=None)
     assert isinstance(result, PlacesLookupResult)
     assert result.found is False
+    assert result.status == "unconfigured"
     assert "not configured" in result.message
 
 
@@ -39,7 +40,6 @@ async def test_places_successful_response():
         ]
     }
 
-    # Custom mock transport
     transport = httpx.MockTransport(
         lambda request: httpx.Response(200, json=mock_response_data)
     )
@@ -53,11 +53,52 @@ async def test_places_successful_response():
         )
 
     assert result.found is True
+    assert result.status == "found_single"
     assert result.shop_name == "Gupta General Store"
     assert result.rating == 4.6
     assert result.user_rating_count == 128
     assert "Sector 18, Noida" in result.formatted_address
     assert result.places_id == "places_12345"
+
+
+@pytest.mark.asyncio
+async def test_places_multiple_candidates():
+    mock_response_data = {
+        "places": [
+            {
+                "id": "place_1",
+                "displayName": {"text": "Gupta Store Sector 18"},
+                "formattedAddress": "Sector 18, Noida",
+                "rating": 4.5,
+                "userRatingCount": 50,
+            },
+            {
+                "id": "place_2",
+                "displayName": {"text": "Gupta Kirana Atta Market"},
+                "formattedAddress": "Atta Market, Noida",
+                "rating": 4.2,
+                "userRatingCount": 35,
+            },
+        ]
+    }
+
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, json=mock_response_data)
+    )
+
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = await lookup_google_places(
+            "Gupta Store",
+            "Noida",
+            api_key="fake-test-key",
+            client=client,
+        )
+
+    assert result.found is True
+    assert result.status == "multiple_candidates"
+    assert len(result.candidates) == 2
+    assert result.candidates[0].name == "Gupta Store Sector 18"
+    assert result.candidates[1].name == "Gupta Kirana Atta Market"
 
 
 @pytest.mark.asyncio
@@ -76,6 +117,7 @@ async def test_places_no_matches_found():
         )
 
     assert result.found is False
+    assert result.status == "not_found"
     assert "No matching business found" in result.message
 
 
@@ -94,4 +136,5 @@ async def test_places_http_error():
         )
 
     assert result.found is False
+    assert result.status == "error"
     assert "status 403" in result.message

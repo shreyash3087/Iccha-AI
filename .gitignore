@@ -35,6 +35,7 @@ Thumbs.db
 # Committed Markdown reports go in docs/benchmarks/ instead.
 bench_results/
 
-# ─── IDEs ──────────────────────────────────────────────────────────────────
-.vscode/settings.json
-.idea/
+# ─── Temp Draft Sites ──────────────────────────────────────────────────────
+temp_sites/*.json
+backend/src/data/temp_sites/*.json
+frontend/public/temp_sites/*.json
