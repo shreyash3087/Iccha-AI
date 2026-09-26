@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "iccha-backend"
+version = "0.1.0"
+description = "ICCHA AI — Voice agent backend for Indian retail shop owners"
+readme = "README.md"
+requires-python = ">=3.10, <3.15"
+
+dependencies = [
+    # LiveKit Agents core framework
+    "livekit-agents~=1.8",
+    # Turn detector — MultilingualModel for Hindi-optimised endpointing
+    "livekit-plugins-turn-detector",
+    # Configuration management — typed, validated settings from env vars
+    "pydantic-settings>=2.0",
+    # .env file loading
+    "python-dotenv",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    # Code style + linting (matches agent-starter config)
+    "ruff>=0.9",
+    # Type checking
+    "mypy>=1.11",
+    # Type stubs for pytest
+    "pytest-mock",
+]
+
+[tool.uv]
+# yarl 1.24.1 was published with only a cp310 wheel and no sdist, so it cannot
+# install on Python 3.11+. Remove this once upstream uploads the remaining wheels.
+constraint-dependencies = ["yarl<1.24"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+# ─── pytest ────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+log_cli = true
+log_cli_level = "INFO"
+
+# ─── ruff ──────────────────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "B", "A", "C4", "UP", "SIM", "RUF"]
+ignore = [
+    "E501",   # Line too long — handled by formatter
+    "N999",   # Module name — iccha is intentional
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ─── mypy ──────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.10"
+strict = false
+ignore_missing_imports = true
+warn_return_any = false

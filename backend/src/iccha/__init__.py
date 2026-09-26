@@ -1,0 +1,1 @@
+"""ICCHA AI backend package."""
