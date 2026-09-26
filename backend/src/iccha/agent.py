@@ -1,61 +1,47 @@
 """
-ICCHA AI Voice Agent — Phase 1 (Hello World Pipeline).
+ICCHA AI Voice Agent — Phase 3 (Structured Interview & Profile Extraction).
 
-This module defines IcchaAgent, the LiveKit Agent subclass that wires together
-the STT → LLM → TTS pipeline with Silero VAD and MultilingualModel turn
-detection. It is intentionally minimal in Phase 1: the goal is to validate the
-entire pipeline end-to-end and measure baseline latency before any business
-logic is added.
-
-Pipeline (Phase 1):
-  STT  : AssemblyAI Universal-3.5 Pro (language=hi, via LiveKit Inference)
-  LLM  : google/gemma-4-31b-it (via LiveKit Inference)
-  TTS  : fishaudio/s2.1-pro (via LiveKit Inference)
-  VAD  : Silero (auto-supplied by AgentSession)
-  Turn : MultilingualModel (99.4% TPR on Hindi, per PLAN.md §3)
-
-Phase 2 will benchmark these providers against Deepgram, Groq, and Smallest.ai
-using real Hindi audio before locking final choices.
-
-Noise cancellation (ai_coustics) is intentionally excluded in Phase 1 to give
-a clean, unmodified latency baseline. It will be evaluated in Phase 6 tuning.
+Wires together STT → LLM → TTS with structured interview capabilities:
+1. Google Places business lookup & address pre-population
+2. Incremental product & pricing extraction into BusinessProfile schema
+3. Operational hours & contact extraction
+4. Real-time LiveKit DataChannel broadcasting to frontend for live website previews
 """
 
 from __future__ import annotations
 
+import json
 import logging
 
 from livekit.agents import Agent, RunContext, function_tool, inference
 
 from iccha.config import get_settings
-from iccha.prompts import PHASE1_SYSTEM_PROMPT
+from iccha.models import BusinessCategory, BusinessHours, BusinessProfile, ProductItem
+from iccha.prompts import PHASE3_SYSTEM_PROMPT
+from iccha.tools.places import lookup_google_places
 
 logger = logging.getLogger(__name__)
 
 
 class IcchaAgent(Agent):
     """
-    ICCHA AI voice agent for Indian retail shop owners.
+    ICCHA AI conversational voice agent for Indian retail shop owners.
 
-    Phase 1 capability: bilingual conversation (Hindi + English) with
-    MultilingualModel turn detection. No business extraction or website
-    generation yet — those are Phase 3.
-
-    The Agent base class receives instructions (system prompt) and an LLM.
-    STT, TTS, and turn handling are wired in AgentSession (server.py) to
-    keep the Agent class focused purely on behaviour.
+    Maintains a live `BusinessProfile` state. As the merchant answers questions
+    during the 5-step structured interview, tools update the profile and broadcast
+    delta events over the LiveKit room's data channel.
     """
 
     def __init__(self) -> None:
         settings = get_settings()
 
         super().__init__(
-            # ── LLM: Gemma 4 31B via LiveKit Inference ───────────────────
-            # Phase 2 will benchmark Groq Llama 3.3 70B and Cerebras against
-            # this baseline. Groq/Cerebras claim 100-200ms TTFT vs ~400-700ms
-            # for standard GPU-hosted inference; we need real measurements.
             llm=inference.LLM(model="google/gemma-4-31b-it"),
-            instructions=PHASE1_SYSTEM_PROMPT,
+            instructions=PHASE3_SYSTEM_PROMPT,
+        )
+
+        self.profile = BusinessProfile(
+            shop_name="मेरी दुकान",
         )
 
         logger.info(
@@ -64,50 +50,172 @@ class IcchaAgent(Agent):
             settings.google_places_configured,
         )
 
-    # ── Tool stubs (wired in Phase 3) ─────────────────────────────────────
-    #
-    # Declaring the stub here establishes the interface and ensures the test
-    # suite can assert that it exists. Phase 3 will replace the body with the
-    # real Google Places API call and a hold-message (cached TTS) pattern so
-    # the Places lookup latency is invisible to the user.
+    async def _broadcast_profile(self, context: RunContext | None = None) -> None:
+        """Broadcast updated BusinessProfile over LiveKit room DataChannel."""
+        if not context or not hasattr(context, "session"):
+            return
+        try:
+            session = getattr(context, "session", None)
+            room = getattr(session, "room", None) if session else None
+            local_participant = getattr(room, "local_participant", None) if room else None
+
+            if local_participant and hasattr(local_participant, "publish_data"):
+                payload = self.profile.to_event_json().encode("utf-8")
+                await local_participant.publish_data(payload, reliable=True)
+                logger.info(
+                    "Broadcast profile update over DataChannel | shop_name=%s | products=%d",
+                    self.profile.shop_name,
+                    len(self.profile.products),
+                )
+        except Exception as e:
+            logger.warning("Could not broadcast profile over DataChannel: %s", e)
+
+    # ── Phase 3 Tool: Business Lookup ─────────────────────────────────────────
 
     @function_tool
     async def lookup_business(
         self,
         context: RunContext,
         business_name: str,
-        locality: str,
+        locality: str = "",
     ) -> str:
         """
         Look up a retail business on Google Places by name and locality.
 
-        Returns a JSON string with available details (name, address, phone,
-        hours, rating, reviews). Returns a stub message in Phase 1.
+        Pre-populates address, rating, and phone numbers if found.
 
         Args:
-            business_name: The spoken name of the shop, as heard by STT.
-            locality: City, area, or neighbourhood (e.g. "Lajpat Nagar, Delhi").
+            business_name: The spoken name of the shop (e.g. 'गुप्ता जनरल स्टोर').
+            locality: Locality, market, or city (e.g. 'Sector 18 Noida' or 'Lajpat Nagar').
         """
-        settings = get_settings()
+        self.profile.shop_name = business_name
+        if locality:
+            self.profile.locality = locality
 
-        if not settings.google_places_configured:
-            logger.debug(
-                "lookup_business called but GOOGLE_PLACES_API_KEY not set — "
-                "returning stub. (Expected in Phase 1.)"
-            )
-            # Return a friendly stub so the LLM can continue the conversation.
-            return (
-                f"Business lookup is not yet configured. "
-                f"I heard the shop name as '{business_name}' "
-                f"in '{locality}'. Please confirm these details with the user."
-            )
+        lookup = await lookup_google_places(business_name, locality)
 
-        # TODO Phase 3: implement real Google Places Text Search
-        # Pattern:
-        #   1. Play a cached hold-message TTS clip ("ek second, main dhundh raha hoon")
-        #   2. Async HTTP call to Places API
-        #   3. Return structured JSON
-        #   4. Agent reads back key fields for user confirmation
-        raise NotImplementedError(
-            "Google Places lookup will be implemented in Phase 3."
+        if lookup.found:
+            self.profile.verified_via_places = True
+            if lookup.shop_name:
+                self.profile.shop_name = lookup.shop_name
+            if lookup.formatted_address:
+                self.profile.address = lookup.formatted_address
+            if lookup.rating:
+                self.profile.rating = lookup.rating
+            if lookup.user_rating_count:
+                self.profile.total_reviews = lookup.user_rating_count
+            if lookup.phone:
+                self.profile.phone = lookup.phone
+            if lookup.places_id:
+                self.profile.places_id = lookup.places_id
+
+        await self._broadcast_profile(context)
+
+        return json.dumps(lookup.to_dict(), ensure_ascii=False)
+
+    # ── Phase 3 Tool: Product Catalog Collection ──────────────────────────────
+
+    @function_tool
+    async def add_product(
+        self,
+        context: RunContext,
+        name: str,
+        price: float | None = None,
+        unit: str | None = None,
+        description: str | None = None,
+    ) -> str:
+        """
+        Add a product or service to the shop's featured catalog.
+
+        Args:
+            name: Product name in Hindi/English (e.g. 'बासमती चावल' or 'Ladies Suit').
+            price: Price in Indian Rupees (₹), e.g. 350.0.
+            unit: Unit of measurement, e.g. 'kg', 'packet', 'piece', 'meter'.
+            description: Optional details, e.g. 'Premium quality 5kg bag'.
+        """
+        item = ProductItem(
+            name=name,
+            price=price,
+            unit=unit,
+            description=description,
+        )
+        self.profile.products.append(item)
+
+        await self._broadcast_profile(context)
+
+        unit_str = f" per {unit}" if unit else ""
+        price_str = f" at ₹{price:.0f}{unit_str}" if price is not None else ""
+        return f"Added '{name}'{price_str}. Total products in catalog: {len(self.profile.products)}."
+
+    # ── Phase 3 Tool: Business Info & Timings Update ──────────────────────────
+
+    @function_tool
+    async def update_business_info(
+        self,
+        context: RunContext,
+        category: str | None = None,
+        owner_name: str | None = None,
+        phone: str | None = None,
+        open_time: str | None = None,
+        close_time: str | None = None,
+        closed_days: str | None = None,
+        offers: str | None = None,
+    ) -> str:
+        """
+        Update shop operational details, category, contact, or timings.
+
+        Args:
+            category: Business category (e.g. 'kirana', 'clothing', 'electronics', 'pharmacy').
+            owner_name: Name of the merchant.
+            phone: 10-digit contact / WhatsApp number.
+            open_time: Opening time (e.g. '09:00 AM' or 'सुबह 9 बजे').
+            close_time: Closing time (e.g. '09:00 PM' or 'रात 9 बजे').
+            closed_days: Days closed (e.g. 'Sunday' or 'रविवार').
+            offers: Highlights or deals (e.g. 'Free home delivery').
+        """
+        if category:
+            try:
+                self.profile.category = BusinessCategory(category.lower())
+            except ValueError:
+                self.profile.category = BusinessCategory.OTHER
+        if owner_name:
+            self.profile.owner_name = owner_name
+        if phone:
+            self.profile.phone = phone
+            self.profile.whatsapp = phone
+
+        if open_time or close_time or closed_days:
+            if not self.profile.hours:
+                self.profile.hours = BusinessHours()
+            if open_time:
+                self.profile.hours.open_time = open_time
+            if close_time:
+                self.profile.hours.close_time = close_time
+            if closed_days:
+                self.profile.hours.closed_days = [d.strip() for d in closed_days.split(",")]
+
+        if offers:
+            self.profile.offers = [o.strip() for o in offers.split(",") if o.strip()]
+
+        await self._broadcast_profile(context)
+
+        return "Business operational info and timings updated successfully."
+
+    # ── Phase 3 Tool: Final Website Confirmation ─────────────────────────────
+
+    @function_tool
+    async def finalize_website(
+        self,
+        context: RunContext,
+    ) -> str:
+        """
+        Mark the business profile interview as complete once the user confirms details.
+        Triggers website generation ready state.
+        """
+        self.profile.interview_complete = True
+        await self._broadcast_profile(context)
+
+        return (
+            f"Website profile for '{self.profile.shop_name}' is now finalized with "
+            f"{len(self.profile.products)} products. Ready to publish!"
         )

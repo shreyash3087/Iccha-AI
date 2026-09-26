@@ -81,7 +81,7 @@ export default function HomePage() {
             textTransform: "uppercase",
           }}
         >
-          Phase 1 · Beta
+          Phase 3 · Live Website Creation
         </div>
       </header>
 
@@ -93,7 +93,7 @@ export default function HomePage() {
           alignItems: "center",
           textAlign: "center",
           gap: "20px",
-          maxWidth: "600px",
+          maxWidth: "1040px",
           width: "100%",
         }}
       >
@@ -260,7 +260,7 @@ export default function HomePage() {
           color: "var(--color-text-muted)",
         }}
       >
-        <span>Powered by LiveKit · Phase 1 — Pipeline Baseline</span>
+        <span>Powered by LiveKit · Phase 3 — Voice Website Generator</span>
       </footer>
     </main>
   );

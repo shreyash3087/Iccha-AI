@@ -22,13 +22,17 @@ import {
   LiveKitRoom,
   RoomAudioRenderer,
   useVoiceAssistant,
+  useRoomContext,
   BarVisualizer,
 } from "@livekit/components-react";
 import "@livekit/components-styles";
-import { useCallback, useState } from "react";
+import { RoomEvent } from "livekit-client";
+import { useCallback, useEffect, useState } from "react";
 import { fetchToken, getLiveKitUrl } from "@/lib/livekit";
+import type { BusinessProfile, BusinessProfileEvent } from "@/types/business";
 import { StatusBadge, type AgentStatus } from "./StatusBadge";
 import { WaveAnimation } from "./WaveAnimation";
+import { LiveWebsitePreview } from "./LiveWebsitePreview";
 
 // ── Inner component (must be inside LiveKitRoom) ──────────────────────────
 
@@ -37,7 +41,9 @@ function VoiceAssistantInner({
 }: {
   onDisconnect: () => void;
 }) {
+  const room = useRoomContext();
   const { state, audioTrack } = useVoiceAssistant();
+  const [profile, setProfile] = useState<BusinessProfile | null>(null);
 
   // Map LiveKit agent state strings to our AgentStatus type
   const agentStatus: AgentStatus = (() => {
@@ -60,103 +66,156 @@ function VoiceAssistantInner({
   const isSpeaking = agentStatus === "speaking";
   const isListening = agentStatus === "listening";
 
+  // Listen for real-time BusinessProfile updates over LiveKit DataChannel
+  useEffect(() => {
+    if (!room) return;
+
+    const handleDataReceived = (payload: Uint8Array) => {
+      try {
+        const text = new TextDecoder().decode(payload);
+        const data: BusinessProfileEvent = JSON.parse(text);
+        if (data && data.type === "BUSINESS_PROFILE_UPDATE" && data.profile) {
+          setProfile(data.profile);
+        }
+      } catch (err) {
+        console.warn("[DataChannel] Failed to decode incoming message:", err);
+      }
+    };
+
+    room.on(RoomEvent.DataReceived, handleDataReceived);
+    return () => {
+      room.off(RoomEvent.DataReceived, handleDataReceived);
+    };
+  }, [room]);
+
   return (
     <div
       style={{
         display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
+        flexDirection: "row",
+        flexWrap: "wrap",
+        alignItems: "flex-start",
+        justifyContent: "center",
         gap: "32px",
         width: "100%",
-        maxWidth: "440px",
+        maxWidth: "960px",
         margin: "0 auto",
       }}
     >
-      {/* Status badge */}
-      <StatusBadge status={agentStatus} />
-
-      {/* Agent visualiser — circular waveform when speaking */}
+      {/* ── Left panel: Voice agent controller ──────────────────────────── */}
       <div
         style={{
-          width: 180,
-          height: 180,
-          borderRadius: "50%",
           display: "flex",
+          flexDirection: "column",
           alignItems: "center",
-          justifyContent: "center",
-          background: isSpeaking
-            ? "radial-gradient(circle, rgba(255,153,51,0.12), transparent 70%)"
-            : isListening
-              ? "radial-gradient(circle, rgba(16,185,129,0.08), transparent 70%)"
-              : "radial-gradient(circle, rgba(255,255,255,0.03), transparent 70%)",
-          border: `2px solid ${
-            isSpeaking
-              ? "rgba(255,153,51,0.3)"
-              : isListening
-                ? "rgba(16,185,129,0.2)"
-                : "rgba(255,255,255,0.08)"
-          }`,
-          transition: "all 0.4s ease",
-          position: "relative",
+          gap: "28px",
+          width: "100%",
+          maxWidth: "380px",
+          flex: "1 1 320px",
+          background: "rgba(255, 255, 255, 0.02)",
+          border: "1px solid rgba(255, 255, 255, 0.07)",
+          borderRadius: "20px",
+          padding: "32px 24px",
+          boxShadow: "0 12px 36px rgba(0, 0, 0, 0.35)",
         }}
       >
-        {/* LiveKit BarVisualizer when we have the agent audio track */}
-        {audioTrack ? (
-          <BarVisualizer
-            trackRef={audioTrack}
-            style={{ width: 100, height: 48 }}
-            barCount={7}
-            options={{ minHeight: 4 }}
-          />
-        ) : (
-          <WaveAnimation isSpeaking={isSpeaking} isListening={isListening} />
-        )}
+        {/* Status badge */}
+        <StatusBadge status={agentStatus} />
 
-        {/* Outer pulse ring when listening */}
-        {isListening && <span className="pulse-ring" />}
+        {/* Agent visualiser — circular waveform when speaking */}
+        <div
+          style={{
+            width: 170,
+            height: 170,
+            borderRadius: "50%",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: isSpeaking
+              ? "radial-gradient(circle, rgba(255,153,51,0.12), transparent 70%)"
+              : isListening
+                ? "radial-gradient(circle, rgba(16,185,129,0.08), transparent 70%)"
+                : "radial-gradient(circle, rgba(255,255,255,0.03), transparent 70%)",
+            border: `2px solid ${
+              isSpeaking
+                ? "rgba(255,153,51,0.3)"
+                : isListening
+                  ? "rgba(16,185,129,0.2)"
+                  : "rgba(255,255,255,0.08)"
+            }`,
+            transition: "all 0.4s ease",
+            position: "relative",
+          }}
+        >
+          {/* LiveKit BarVisualizer when we have the agent audio track */}
+          {audioTrack ? (
+            <BarVisualizer
+              trackRef={audioTrack}
+              style={{ width: 100, height: 48 }}
+              barCount={7}
+              options={{ minHeight: 4 }}
+            />
+          ) : (
+            <WaveAnimation isSpeaking={isSpeaking} isListening={isListening} />
+          )}
+
+          {/* Outer pulse ring when listening */}
+          {isListening && <span className="pulse-ring" />}
+        </div>
+
+        {/* Context hint text */}
+        <p
+          style={{
+            fontSize: "0.88rem",
+            color: "var(--color-text-secondary)",
+            textAlign: "center",
+            lineHeight: 1.6,
+            maxWidth: "300px",
+          }}
+        >
+          {isSpeaking
+            ? "ICCHA बोल रही है — रुकिए या बीच में बोल सकते हैं"
+            : isListening
+              ? "आपकी आवाज़ सुनी जा रही है..."
+              : agentStatus === "thinking"
+                ? "ICCHA सोच रही है..."
+                : agentStatus === "connecting"
+                  ? "ICCHA से जुड़ रहे हैं..."
+                  : "कुछ भी बोलिए — Hindi या English में"}
+        </p>
+
+        {/* End call button */}
+        <button
+          id="end-session-btn"
+          className="btn-ghost"
+          onClick={onDisconnect}
+          aria-label="End voice session"
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+          >
+            <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
+            <line x1="12" y1="2" x2="12" y2="12" />
+          </svg>
+          बात खत्म करें
+        </button>
       </div>
 
-      {/* Context hint text */}
-      <p
+      {/* ── Right panel: Live Website Preview ──────────────────────────── */}
+      <div
         style={{
-          fontSize: "0.9rem",
-          color: "var(--color-text-secondary)",
-          textAlign: "center",
-          lineHeight: 1.6,
-          maxWidth: "300px",
+          width: "100%",
+          maxWidth: "520px",
+          flex: "1 1 380px",
         }}
       >
-        {isSpeaking
-          ? "ICCHA बोल रहा है — रुकिए या बीच में बोल सकते हैं"
-          : isListening
-            ? "आपकी आवाज़ सुनी जा रही है..."
-            : agentStatus === "thinking"
-              ? "ICCHA सोच रहा है..."
-              : agentStatus === "connecting"
-                ? "ICCHA से जुड़ रहे हैं..."
-                : "कुछ भी बोलिए — Hindi या English में"}
-      </p>
-
-      {/* End call button */}
-      <button
-        id="end-session-btn"
-        className="btn-ghost"
-        onClick={onDisconnect}
-        aria-label="End voice session"
-      >
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-        >
-          <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
-          <line x1="12" y1="2" x2="12" y2="12" />
-        </svg>
-        बात खत्म करें
-      </button>
+        <LiveWebsitePreview profile={profile} />
+      </div>
     </div>
   );
 }
