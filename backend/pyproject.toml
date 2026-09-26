@@ -13,6 +13,8 @@ dependencies = [
     # LiveKit Agents core framework
     "livekit-agents~=1.8",
     # Turn detector — MultilingualModel for Hindi-optimised endpointing
+    "livekit-plugins-openai>=1.8.2",
+    "livekit-plugins-smallestai>=1.8.2",
     "livekit-plugins-turn-detector",
     # Configuration management — typed, validated settings from env vars
     "pydantic-settings>=2.0",
@@ -30,6 +32,12 @@ dev = [
     "mypy>=1.11",
     # Type stubs for pytest
     "pytest-mock",
+    "httpx>=0.28.1",
+    "aiohttp>=3.14.3",
+    "rich>=15.0.0",
+    "pydub>=0.25.1",
+    "groq>=1.7.0",
+    "gtts>=2.5.4",
 ]
 
 [tool.uv]

@@ -30,6 +30,11 @@ out/
 .DS_Store
 Thumbs.db
 
+# ─── Benchmarking ─────────────────────────────────────────────────────────
+# Raw benchmark data, generated audio, and intermediate results.
+# Committed Markdown reports go in docs/benchmarks/ instead.
+bench_results/
+
 # ─── IDEs ──────────────────────────────────────────────────────────────────
 .vscode/settings.json
 .idea/

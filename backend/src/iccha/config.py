@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -80,6 +80,23 @@ class Settings(BaseSettings):
             "Google Places API key for business lookup. "
             "Leave blank until Phase 3 — the agent will skip lookup gracefully."
         ),
+    )
+
+    # ── Phase 2 benchmark keys (all optional) ─────────────────────────────
+    # Read directly from os.environ by the bench runner; declared here for
+    # documentation and type-checked access. None = provider skipped.
+    groq_api_key: str | None = Field(
+        default=None,
+        description="Groq API key — LLM benchmarking in Phase 2. Free at console.groq.com",
+    )
+    deepgram_api_key: str | None = Field(
+        default=None,
+        description="Deepgram API key — STT benchmarking in Phase 2. Free at console.deepgram.com",
+    )
+    smallest_ai_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SMALLEST_AI_API_KEY", "SMALLEST_API_KEY"),
+        description="Smallest.ai API key — TTS benchmarking in Phase 2.",
     )
 
     # ── Validators ───────────────────────────────────────────────────────

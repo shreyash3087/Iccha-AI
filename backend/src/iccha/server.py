@@ -38,6 +38,7 @@ Pipeline configuration (Phase 1):
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -49,10 +50,14 @@ from livekit.agents import (
     cli,
     inference,
 )
+from livekit.plugins import smallestai
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from iccha.agent import IcchaAgent
 from iccha.config import get_settings
+from iccha.resampler_patch import apply_resampler_patch
+
+apply_resampler_patch()
 
 # Ensure .env.local / .env are loaded into os.environ so the LiveKit CLI worker process
 # has access to LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET
@@ -70,6 +75,15 @@ logger = logging.getLogger(__name__)
 # concurrent rooms to the same process; each rtc_session call gets its own
 # isolated AgentSession.
 settings = get_settings()
+
+# Propagate keys to os.environ so plugins that look for standard env var names find them
+if settings.smallest_ai_api_key:
+    os.environ["SMALLEST_API_KEY"] = settings.smallest_ai_api_key
+if settings.deepgram_api_key:
+    os.environ["DEEPGRAM_API_KEY"] = settings.deepgram_api_key
+if settings.groq_api_key:
+    os.environ["GROQ_API_KEY"] = settings.groq_api_key
+
 server = AgentServer(
     ws_url=settings.livekit_url,
     api_key=settings.livekit_api_key,
@@ -99,22 +113,18 @@ async def iccha_session(ctx: JobContext) -> None:
 
     session = AgentSession(
         # ── STT ──────────────────────────────────────────────────────────
-        # AssemblyAI Universal-3.5 Pro with Hindi language code.
-        # The model handles Hindi, Hinglish code-switching, and Indian accents.
-        # Phase 2 will benchmark this against Deepgram Nova-3 (multi) and
-        # Smallest.ai Pulse (north_indic) using recorded real-user speech.
+        # Phase 2 winner: Deepgram Nova-3 (844ms vs 3546ms for AssemblyAI)
+        # Handles Hindi, English, and Hinglish code-switching with 4.2x lower latency.
         stt=inference.STT(
-            model="assemblyai/universal-3-5-pro",
-            language="hi",
+            model="deepgram/nova-3",
+            language="multi",
         ),
-        # ── TTS ──────────────────────────────────────────────────────────
-        # Cartesia Sonic-3 via LiveKit Inference.
-        # Voice: "Indian Lady" (3b554273-4299-48b9-9aaf-eefd438e3941), language="hi".
-        # Provides an authentic native Indian female voice, matching ICCHA's persona
-        # and eliminating the Western/American accent from the starter kit preset.
-        tts=inference.TTS(
-            model="cartesia/sonic-3",
-            voice="3b554273-4299-48b9-9aaf-eefd438e3941",
+        # ── TTS: Smallest.ai Lightning via persistent WebSocket streaming ─
+        # Sub-100ms real-time audio chunk streaming over wss://api.smallest.ai/waves/v1/tts/live
+        tts=smallestai.TTS(
+            api_key=settings.smallest_ai_api_key or os.getenv("SMALLEST_API_KEY"),
+            model="lightning_v3.1",
+            voice_id="sunidhi",
             language="hi",
         ),
         # ── Turn Handling ─────────────────────────────────────────────────
@@ -124,9 +134,6 @@ async def iccha_session(ctx: JobContext) -> None:
             # Dynamic (EMA-based) endpointing adapts to each caller's own
             # natural pause rhythm instead of a fixed silence threshold.
             turn_detection=MultilingualModel(),
-            # Adaptive interruptions: distinguishes real barge-ins from
-            # backchannels like "haan", "theek hai", "hmm".
-            interruption={"mode": "adaptive"},
             # Preemptive generation: LLM starts generating while the turn
             # detector is still deciding - saves 100-200ms on most turns.
             preemptive_generation={"enabled": True},
