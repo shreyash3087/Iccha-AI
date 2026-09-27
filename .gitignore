@@ -35,7 +35,11 @@ Thumbs.db
 # Committed Markdown reports go in docs/benchmarks/ instead.
 bench_results/
 
-# ─── Temp Draft Sites ──────────────────────────────────────────────────────
+# ─── Temp Draft Sites & DBs ────────────────────────────────────────────────
 temp_sites/*.json
 backend/src/data/temp_sites/*.json
 frontend/public/temp_sites/*.json
+*.db
+*.sqlite
+*.sqlite3
+

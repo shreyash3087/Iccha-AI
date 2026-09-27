@@ -43,7 +43,7 @@ function getRequiredEnv(name: string): string {
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
-    const { roomName, participantName } = await req.json();
+    const { roomName, participantName, language = "hi-en", sessionId } = await req.json();
 
     // Validate inputs
     if (!roomName || typeof roomName !== "string") {
@@ -73,6 +73,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       ttl: "15m",
       metadata: JSON.stringify({
         agentName,
+        language,
+        sessionId: sessionId ?? null,
         createdAt: new Date().toISOString(),
       }),
     });

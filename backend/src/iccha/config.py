@@ -98,6 +98,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("SMALLEST_AI_API_KEY", "SMALLEST_API_KEY"),
         description="Smallest.ai API key — TTS benchmarking in Phase 2.",
     )
+    unsplash_access_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("UNSPLASH_ACCESS_KEY", "UNSPLASH_KEY"),
+        description="Unsplash Access Key for real photography assets.",
+    )
 
     # ── Validators ───────────────────────────────────────────────────────
 
@@ -123,6 +128,11 @@ class Settings(BaseSettings):
     def google_places_configured(self) -> bool:
         """True when Google Places API is available (Phase 3+)."""
         return bool(self.google_places_api_key)
+
+    @property
+    def unsplash_configured(self) -> bool:
+        """True when Unsplash Access Key is available."""
+        return bool(self.unsplash_access_key)
 
 
 @lru_cache(maxsize=1)

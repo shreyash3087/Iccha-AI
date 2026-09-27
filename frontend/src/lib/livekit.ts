@@ -5,7 +5,6 @@
  * The browser never sees LiveKit credentials — only the short-lived JWT.
  */
 
-import { v4 as uuidv4 } from "uuid";
 
 export interface TokenResponse {
   token: string;
@@ -17,27 +16,73 @@ export interface TokenError {
   error: string;
 }
 
+export type SupportedLanguage =
+  | "hi"   // Hindi
+  | "hi-en" // Hinglish (default)
+  | "mr"   // Marathi
+  | "ta"   // Tamil
+  | "te"   // Telugu
+  | "kn"   // Kannada
+  | "gu"   // Gujarati
+  | "pa"   // Punjabi
+  | "bn"   // Bengali
+  | "en";  // English
+
+export const LANGUAGE_OPTIONS: { code: SupportedLanguage; name: string; native: string; tag: string }[] = [
+  { code: "hi-en", name: "Hinglish",  native: "Hindi + English", tag: "HI+EN" },
+  { code: "hi",    name: "Hindi",     native: "हिंदी",            tag: "HI" },
+  { code: "mr",    name: "Marathi",   native: "मराठी",             tag: "MR" },
+  { code: "ta",    name: "Tamil",     native: "தமிழ்",             tag: "TA" },
+  { code: "te",    name: "Telugu",    native: "తెలుగు",             tag: "TE" },
+  { code: "kn",    name: "Kannada",   native: "ಕನ್ನಡ",            tag: "KN" },
+  { code: "gu",    name: "Gujarati",  native: "ગુજરાતી",            tag: "GU" },
+  { code: "pa",    name: "Punjabi",   native: "ਪੰਜਾਬੀ",            tag: "PA" },
+  { code: "bn",    name: "Bengali",   native: "বাংলা",             tag: "BN" },
+  { code: "en",    name: "English",   native: "English",           tag: "EN" },
+];
+
+/**
+ * Generate a short, URL-safe session ID (12 chars, alphanumeric).
+ * Used as both the LiveKit room name suffix and the temp site slug.
+ */
+export function generateSessionId(): string {
+  // 9 bytes → 12 base64url chars; strip non-alphanum
+  const arr = new Uint8Array(9);
+  crypto.getRandomValues(arr);
+  return Array.from(arr)
+    .map((b) => b.toString(36).padStart(2, "0"))
+    .join("")
+    .slice(0, 12);
+}
+
 /**
  * Fetch a short-lived LiveKit access token from our backend API.
  *
- * Generates a unique room name per session (so each shopkeeper gets their
- * own isolated room). The participant identity is also unique per session.
+ * Accepts an optional `sessionId` — if provided, the same ID is used as
+ * the room name and site slug so the voice session and website are linked.
  *
- * @returns { token, roomName } on success
+ * @param language   The shopkeeper's preferred language (default: 'hi-en')
+ * @param sessionId  Pre-generated session ID (generate with generateSessionId())
+ * @returns { token, roomName, sessionId } on success
  * @throws  Error with a user-facing message on failure
  */
-export async function fetchToken(): Promise<{
+export async function fetchToken(
+  language: SupportedLanguage = "hi-en",
+  sessionId?: string
+): Promise<{
   token: string;
   roomName: string;
+  sessionId: string;
 }> {
-  // Each session gets a fresh unique room — no cross-talk between users
-  const roomName = `iccha-room-${uuidv4()}`;
-  const participantName = `shopkeeper-${uuidv4().slice(0, 8)}`;
+  const sid = sessionId ?? generateSessionId();
+  // Room name is deterministic from session ID — makes debugging easy
+  const roomName = `iccha-${sid}`;
+  const participantName = `user-${sid.slice(0, 8)}`;
 
   const res = await fetch("/api/token", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ roomName, participantName }),
+    body: JSON.stringify({ roomName, participantName, language, sessionId: sid }),
   });
 
   const data: TokenResponse | TokenError = await res.json();
@@ -48,7 +93,7 @@ export async function fetchToken(): Promise<{
     );
   }
 
-  return { token: data.token as string, roomName };
+  return { token: data.token as string, roomName, sessionId: sid };
 }
 
 /**

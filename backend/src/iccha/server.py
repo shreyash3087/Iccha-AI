@@ -42,6 +42,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 from livekit.agents import (
@@ -57,7 +58,8 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from iccha.agent import IcchaAgent
 from iccha.config import get_settings
-from iccha.models import ProductItem
+from iccha.models import BusinessProfile, ProductItem
+from iccha.prompts import get_language_prompt
 from iccha.resampler_patch import apply_resampler_patch
 
 apply_resampler_patch()
@@ -145,14 +147,70 @@ async def iccha_session(ctx: JobContext) -> None:
         expressive=False,
     )
 
-    agent = IcchaAgent()
+    # ── Read language & sessionId ───────────────────────────────────────────
+    language = "hi-en"  # default: Hinglish
+    session_id: str | None = None
 
-    # Start the session — this warms up models and publishes the agent's
-    # audio track to the LiveKit room before ctx.connect() is called.
+    # Room name is typically 'iccha-{sessionId}'
+    if ctx.room.name and ctx.room.name.startswith("iccha-"):
+        session_id = ctx.room.name[len("iccha-"):]
+
+    try:
+        await ctx.connect()
+        for participant in ctx.room.remote_participants.values():
+            meta_raw = getattr(participant, "metadata", None) or "{}"
+            meta = json.loads(meta_raw)
+            if "language" in meta:
+                language = meta["language"]
+            if "sessionId" in meta and meta["sessionId"]:
+                session_id = str(meta["sessionId"])
+            break
+    except Exception as e:
+        logger.warning("Could not read participant language metadata: %s", e)
+
+    logger.info("Session starting | language=%s | session_id=%s | room=%s", language, session_id, ctx.room.name)
+
+    # ── Check if an existing website profile already exists for this session ─
+    loaded_profile: BusinessProfile | None = None
+    is_edit_session = False
+
+    if session_id:
+        safe_sid = "".join(c for c in session_id if c.isalnum() or c in "-_")[:32]
+        base_dir = Path(__file__).resolve().parent.parent.parent.parent
+        possible_paths = [
+            base_dir / "frontend" / "public" / "temp_sites" / f"{safe_sid}.json",
+            base_dir / "backend" / "src" / "data" / "temp_sites" / f"{safe_sid}.json",
+            Path.cwd() / "frontend" / "public" / "temp_sites" / f"{safe_sid}.json",
+            Path.cwd() / "public" / "temp_sites" / f"{safe_sid}.json",
+        ]
+        for p in possible_paths:
+            if p.exists():
+                try:
+                    loaded_data = json.loads(p.read_text(encoding="utf-8"))
+                    cand_name = loaded_data.get("shop_name", "")
+                    if cand_name and cand_name != "मेरी दुकान":
+                        loaded_profile = BusinessProfile.model_validate(loaded_data)
+                        loaded_profile.temp_slug = safe_sid
+                        loaded_profile.temp_url = f"/temp/{safe_sid}"
+                        loaded_profile.interview_complete = True
+                        is_edit_session = True
+                        logger.info("Loaded existing profile for edit session: %s (shop: %s, products: %d)", safe_sid, loaded_profile.shop_name, len(loaded_profile.products))
+                        break
+                except Exception as ex:
+                    logger.warning("Failed to parse existing profile JSON at %s: %s", p, ex)
+
+    agent = IcchaAgent(language=language, profile=loaded_profile, is_edit_mode=is_edit_session)
+    agent._room = ctx.room
+
+    if session_id:
+        safe_sid = "".join(c for c in session_id if c.isalnum() or c in "-_")[:32]
+        agent.profile.temp_slug = safe_sid
+        agent.profile.temp_url = f"/temp/{safe_sid}"
+
+    # Start the session — warms up models and connects agent to room
     await session.start(
         agent=agent,
         room=ctx.room,
-        # No RoomOptions/noise cancellation in Phase 1 — clean baseline.
     )
 
     # Listen for DataChannel messages from frontend (image upload notifications & extraction)
@@ -203,24 +261,124 @@ async def iccha_session(ctx: JobContext) -> None:
                             "mention two or three of the items, and ask if they want to add anything else or proceed to shop timings."
                         )
                     )
+
+            elif msg_type == "SELECT_GOOGLE_PLACE":
+                candidate_index = int(data.get("candidate_index", 1)) - 1
+                logger.info("User selected Google Place candidate %d from screen", candidate_index + 1)
+                candidates = agent.profile.google_candidates
+                if 0 <= candidate_index < len(candidates):
+                    chosen = candidates[candidate_index]
+                    agent.profile.shop_name = chosen.name
+                    agent.profile.address = chosen.address
+                    agent.profile.rating = chosen.rating
+                    agent.profile.total_reviews = chosen.user_ratings_total
+                    agent.profile.places_id = chosen.place_id
+                    agent.profile.verified_via_places = True
+                    agent.profile.google_candidates = [chosen]
+                    agent.profile.update_temp_slug(force=True)
+                    agent._save_temp_site()
+                    asyncio.create_task(agent._broadcast_profile(room_override=ctx.room))
+
+                    session.generate_reply(
+                        instructions=(
+                            f"The shopkeeper clicked and selected '{chosen.name}' ({chosen.address}) from the screen. "
+                            f"Rating is {chosen.rating or 'good'}. "
+                            "In warm Hindi using feminine grammar, acknowledge their screen selection: "
+                            f"'बहुत बढ़िया! मैंने आपकी दुकान {chosen.name} चुन ली है।' "
+                            "Then ask them what products or services they sell (Step 3)."
+                        )
+                    )
+
+            elif msg_type == "REJECT_GOOGLE_PLACES":
+                logger.info("User indicated none of the Google candidates match their shop")
+                agent.profile.verified_via_places = False
+                agent.profile.wants_google_review_help = True
+                agent.profile.google_candidates = []
+                agent._save_temp_site()
+                asyncio.create_task(agent._broadcast_profile(room_override=ctx.room))
+                session.generate_reply(
+                    instructions=(
+                        "The shopkeeper clicked that none of the suggested Google Maps listings are their shop. "
+                        "Reassure them warmly in Hindi using feminine grammar that it is no problem at all, "
+                        "we will set up a fresh Google Review page for them! "
+                        "Then ask what products or services they sell (Step 3)."
+                    )
+                )
+
+            elif msg_type == "TEXT_INPUT":
+                user_text = str(data.get("text", "")).strip()
+                if user_text:
+                    logger.info("Dev TEXT_INPUT received: %r", user_text)
+                    if is_edit_session or getattr(agent, "is_edit_mode", False) or (agent.profile and agent.profile.interview_complete):
+                        session.generate_reply(
+                            user_input=user_text,
+                            instructions=(
+                                f"The merchant sent this live website edit request: '{user_text}'. "
+                                "You MUST execute the corresponding tool call immediately: "
+                                "- If adding a section (reviews, testimonials, google reviews): call `add_section(section_type='reviews')` "
+                                "- If adding photo gallery: call `add_section(section_type='gallery')` "
+                                "- If adding about us / story: call `add_section(section_type='story')` "
+                                "- If adding trust badges / highlights: call `add_section(section_type='highlights')` "
+                                "- If adding offers or discount banner: call `add_section(section_type='offers')` "
+                                "- If adding FAQ: call `add_section(section_type='faq')` "
+                                "- If adding photos to items or improving visuals: call `auto_populate_images()` "
+                                "- If updating a product photo: call `set_product_image(product_name=..., query_or_url=...)` "
+                                "- If updating hero background / cover image: call `set_hero_image(query_or_url=...)` "
+                                "- If removing any section (e.g. reviews, gallery): call `remove_section(section_type=...)` "
+                                "- If changing color or theme (e.g. maroon, blue, dark, etc.): call `update_storefront_style(primary_color=...)` "
+                                "- If changing template or layout design: call `update_storefront_style(template_id=...)` "
+                                "- If removing a product or service: call `remove_product(product_name=...)` "
+                                "- If changing price or unit: call `update_product_price(product_name=..., new_price=...)` "
+                                "- If adding a product or service: call `add_product(name=..., price=..., item_type=...)` "
+                                "- If changing timings, phone, WhatsApp, shop name, or address: call `update_business_info(...)` "
+                                "NEVER say you made a change without calling the tool! The screen only updates when the tool executes. "
+                                "After executing the tool call, confirm the change to the merchant in 1 concise, pleasant sentence in Hindi/Hinglish."
+                            )
+                        )
+                    else:
+                        session.generate_reply(user_input=user_text)
+
+            elif msg_type == "SCREENSHOT_CONTEXT":
+                logger.info("Screenshot visual context received from client DataChannel")
+                # Visual context notification for current turn
+
+            elif msg_type == "EDIT_SESSION_INIT":
+                logger.info("Received EDIT_SESSION_INIT from client storefront")
+                client_profile = data.get("profile")
+                if client_profile and isinstance(client_profile, dict):
+                    client_shop = client_profile.get("shop_name")
+                    if client_shop and client_shop != "मेरी दुकान":
+                        agent.profile = BusinessProfile.model_validate(client_profile)
+                        agent.profile.interview_complete = True
+                        agent.is_edit_mode = True
+                        agent._save_temp_site()
+                        logger.info("Synchronized profile from client EDIT_SESSION_INIT: %s", agent.profile.shop_name)
+
         except Exception as err:
             logger.warning("Error processing incoming DataChannel packet: %s", err)
 
-    # Join the room — user can now hear and speak to the agent.
-    await ctx.connect()
-
-    logger.info("Session connected | room=%s", ctx.room.name)
 
     # Broadcast initial profile so frontend is immediately synchronized
     await agent._broadcast_profile(room_override=ctx.room)
 
-    # Immediately greet the caller in Hindi/English to start the conversation
-    session.generate_reply(
-        instructions=(
-            "Greet the shopkeeper warmly in Hindi, introduce yourself as ICCHA, "
-            "and ask what the name of their shop is."
+    # Immediately greet the caller based on mode (edit vs new creation)
+    if is_edit_session and agent.profile and agent.profile.shop_name != "मेरी दुकान":
+        session.generate_reply(
+            instructions=(
+                f"The merchant is currently viewing and editing their live website for '{agent.profile.shop_name}'. "
+                f"In their selected language ({language}), greet them warmly. "
+                f"Say that their website for '{agent.profile.shop_name}' is live and ask what updates they would like to make "
+                "(for example: changing colors/theme, adding or removing items, updating prices, or picking another design template). "
+                "CRITICAL INSTRUCTION: DO NOT ask them for their shop name, address, or basic details again! Their website is already built!"
+            )
         )
-    )
+    else:
+        session.generate_reply(
+            instructions=(
+                f"Greet the shopkeeper warmly according to their selected language ({language}), "
+                "introduce yourself as ICCHA AI, and ask what the name of their shop is."
+            )
+        )
 
 
 if __name__ == "__main__":

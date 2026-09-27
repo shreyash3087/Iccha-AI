@@ -12,7 +12,7 @@ from iccha.tools.places import PlacesLookupResult, lookup_google_places
 
 @pytest.mark.asyncio
 async def test_places_unconfigured_fallback():
-    result = await lookup_google_places("Gupta Store", "Noida", api_key=None)
+    result = await lookup_google_places("Gupta Store", "Noida", api_key="")
     assert isinstance(result, PlacesLookupResult)
     assert result.found is False
     assert result.status == "unconfigured"

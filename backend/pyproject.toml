@@ -20,6 +20,7 @@ dependencies = [
     "pydantic-settings>=2.0",
     # .env file loading
     "python-dotenv",
+    "supabase>=2.31.0",
 ]
 
 [dependency-groups]

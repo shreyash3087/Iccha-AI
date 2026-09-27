@@ -39,6 +39,7 @@ class PlacesLookupResult:
     places_id: str | None = None
     weekday_hours: list[str] | None = None
     candidates: list[GooglePlaceCandidate] = field(default_factory=list)
+    reviews: list[dict[str, Any]] = field(default_factory=list)
     message: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -69,7 +70,7 @@ async def lookup_google_places(
         PlacesLookupResult with matched details, multiple candidates, or found=False.
     """
     settings = get_settings()
-    key = api_key or settings.google_places_api_key
+    key = settings.google_places_api_key if api_key is None else api_key
 
     if not key:
         logger.debug("Google Places API key not set — returning unconfigured fallback")
@@ -89,7 +90,7 @@ async def lookup_google_places(
         "X-Goog-FieldMask": (
             "places.id,places.displayName,places.formattedAddress,"
             "places.rating,places.userRatingCount,places.regularOpeningHours,"
-            "places.nationalPhoneNumber"
+            "places.nationalPhoneNumber,places.reviews"
         ),
     }
     payload = {
@@ -143,20 +144,38 @@ async def lookup_google_places(
                 )
             )
 
+        # Single candidate scenario or top place reviews
+        top_place = raw_places[0]
+        raw_reviews = top_place.get("reviews", [])
+        parsed_reviews: list[dict[str, Any]] = []
+        for i, r in enumerate(raw_reviews[:5]):
+            author = r.get("authorAttribution", {}).get("displayName") or "Google Reviewer"
+            text_val = r.get("text", {}).get("text") or r.get("originalText", {}).get("text") or ""
+            r_rating = int(r.get("rating", 5))
+            r_time = r.get("relativePublishTimeDescription") or "हाल ही में"
+            if text_val:
+                parsed_reviews.append({
+                    "id": f"rev-g-{i+1}",
+                    "author_name": author,
+                    "rating": r_rating,
+                    "text": text_val,
+                    "relative_time": r_time,
+                    "verified": True,
+                })
+
         # Multiple candidates scenario
         if len(parsed_candidates) > 1:
             return PlacesLookupResult(
                 found=True,
                 status="multiple_candidates",
                 candidates=parsed_candidates,
+                reviews=parsed_reviews,
                 message=(
                     f"Found {len(parsed_candidates)} matching businesses for '{text_query}'. "
                     f"Please ask the user which option is their shop."
                 ),
             )
 
-        # Single candidate scenario
-        top_place = raw_places[0]
         display_name = top_place.get("displayName", {}).get("text", business_name)
         address = top_place.get("formattedAddress")
         rating = top_place.get("rating")
@@ -178,6 +197,7 @@ async def lookup_google_places(
             places_id=places_id,
             weekday_hours=weekday_hours,
             candidates=parsed_candidates,
+            reviews=parsed_reviews,
             message=f"Found '{display_name}' on Google Places with rating {rating}★ ({review_count} reviews).",
         )
 
@@ -198,3 +218,60 @@ async def lookup_google_places(
     finally:
         if own_client:
             await client.aclose()
+
+
+async def fetch_place_reviews(
+    place_id: str,
+    *,
+    api_key: str | None = None,
+    client: httpx.AsyncClient | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Fetch top Google reviews directly for a given place_id using Google Places Details API (New).
+    """
+    settings = get_settings()
+    key = settings.google_places_api_key if api_key is None else api_key
+    if not key or not place_id:
+        return []
+
+    url = f"https://places.googleapis.com/v1/places/{place_id}"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": key,
+        "X-Goog-FieldMask": "reviews,displayName,rating,userRatingCount",
+    }
+    own_client = False
+    if client is None:
+        client = httpx.AsyncClient(timeout=DEFAULT_TIMEOUT_SECONDS)
+        own_client = True
+
+    try:
+        resp = await client.get(url, headers=headers)
+        if resp.status_code != 200:
+            logger.warning("Places Details fetch HTTP %d: %s", resp.status_code, resp.text[:200])
+            return []
+        data = resp.json()
+        raw_reviews = data.get("reviews", [])
+        reviews: list[dict[str, Any]] = []
+        for i, r in enumerate(raw_reviews[:5]):
+            author = r.get("authorAttribution", {}).get("displayName") or "Google Reviewer"
+            text_val = r.get("text", {}).get("text") or r.get("originalText", {}).get("text") or ""
+            r_rating = int(r.get("rating", 5))
+            r_time = r.get("relativePublishTimeDescription") or "हाल ही में"
+            if text_val:
+                reviews.append({
+                    "id": f"rev-google-{i+1}",
+                    "author_name": author,
+                    "rating": r_rating,
+                    "text": text_val,
+                    "relative_time": r_time,
+                    "verified": True,
+                })
+        return reviews
+    except Exception as e:
+        logger.warning("Failed to fetch Google reviews for place %s: %s", place_id, e)
+        return []
+    finally:
+        if own_client:
+            await client.aclose()
+
