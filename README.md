@@ -1,7 +1,6 @@
 # ICCHA AI (इच्छा AI)
 
 > **Voice-to-Website AI for Indian Merchants & Local Businesses.**  
-> *बस बोलिए — ICCHA AI आपकी दुकान के लिए एक खूबसूरत, लाइव वेबसाइट बना देगा।*  
 > Multilingual Voice AI supporting **Hindi, Hinglish, Tamil, Telugu, Marathi, Kannada, Gujarati, Bengali, Punjabi, Malayalam, and English**.
 
 ---
