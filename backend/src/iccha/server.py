@@ -74,6 +74,42 @@ load_dotenv(backend_dir / ".env")
 
 logger = logging.getLogger(__name__)
 
+
+def _start_health_server() -> None:
+    """
+    Start a minimal HTTP health-check server when running on cloud platforms
+    (such as Render Web Service Free tier) that define a $PORT environment variable.
+    Allows running the LiveKit worker as a free Web Service on Render ($0/mo).
+    """
+    port_str = os.environ.get("PORT")
+    if not port_str:
+        return
+    try:
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+        import threading
+
+        port = int(port_str)
+
+        class HealthHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"status":"ok","service":"iccha-backend"}\n')
+
+            def log_message(self, format, *args):
+                pass  # Suppress health check log spam
+
+        httpd = HTTPServer(("0.0.0.0", port), HealthHandler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        logger.info("Started HTTP health check server on port %d for cloud Web Service", port)
+    except Exception as e:
+        logger.warning("Failed to start health check server on port %s: %s", port_str, e)
+
+
+_start_health_server()
+
 # ── AgentServer ──────────────────────────────────────────────────────────────
 #
 # A single AgentServer instance per process. LiveKit will dispatch multiple
