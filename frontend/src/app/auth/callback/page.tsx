@@ -18,26 +18,68 @@ export default function AuthCallbackPage() {
 
   useEffect(() => {
     const handleCallback = async () => {
-      // Poll for Supabase session detection (hash token processing)
+      // 1. Immediately read intended redirect from localStorage
+      let destination: string | null = null;
+      if (typeof window !== "undefined") {
+        destination = localStorage.getItem("iccha_auth_redirect");
+      }
+
+      // 2. Poll for Supabase session detection (hash token processing)
       let user = await getCurrentUser();
       let attempts = 0;
-      while (!user && attempts < 10) {
+      while (!user && attempts < 15) {
         await new Promise((resolve) => setTimeout(resolve, 200));
         user = await getCurrentUser();
         attempts++;
       }
 
-      if (typeof window !== "undefined") {
-        const pendingRedirect = localStorage.getItem("iccha_auth_redirect");
-        if (pendingRedirect) {
-          localStorage.removeItem("iccha_auth_redirect");
-          router.replace(pendingRedirect);
-          return;
+      // 3. Fallback check if destination was set during poll
+      if (!destination && typeof window !== "undefined") {
+        destination = localStorage.getItem("iccha_auth_redirect");
+      }
+
+      // 4. Resolve clean final destination — prevent loops back to /call, /login, or /
+      let finalTarget = "/dashboard";
+      if (
+        destination &&
+        destination !== "/" &&
+        destination !== "/call" &&
+        destination !== "/login"
+      ) {
+        finalTarget = destination;
+      }
+
+      // 5. If destination is a storefront (/temp/...), link storefront to logged-in user
+      if (user && finalTarget.startsWith("/temp/")) {
+        const slug = finalTarget
+          .replace("/temp/", "")
+          .split("?")[0]
+          .replace(/[^a-zA-Z0-9_-]/g, "");
+        if (slug) {
+          try {
+            await fetch("/api/storefronts", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "approve",
+                slug,
+                userId: user.id,
+                userEmail: user.email,
+              }),
+            });
+          } catch (e) {
+            console.warn("[AuthCallback] Could not auto-link storefront:", e);
+          }
         }
       }
 
-      // Always go to dashboard after successful authentication
-      router.replace("/dashboard");
+      // 6. Clean up stored redirect key
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("iccha_auth_redirect");
+      }
+
+      // 7. Perform clean browser navigation to destination
+      window.location.replace(finalTarget);
     };
 
     void handleCallback();

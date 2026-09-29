@@ -23,6 +23,7 @@ import {
 import "@livekit/components-styles";
 import { RoomEvent } from "livekit-client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { fetchToken, getLiveKitUrl, LANGUAGE_OPTIONS, type SupportedLanguage } from "@/lib/livekit";
 import type { BusinessProfile, BusinessProfileEvent, ProductItem } from "@/types/business";
 import { StatusBadge, type AgentStatus } from "./StatusBadge";
@@ -197,6 +198,7 @@ function VoiceAssistantInner({
   language: SupportedLanguage;
 }) {
   const room = useRoomContext();
+  const router = useRouter();
   const { state, audioTrack } = useVoiceAssistant();
   const [profile, setProfile] = useState<BusinessProfile | null>(null);
   const [isQROpen, setIsQROpen] = useState(false);
@@ -231,11 +233,17 @@ function VoiceAssistantInner({
 
   const handleOpenStorefrontClick = async (e: React.MouseEvent) => {
     e.preventDefault();
-    if (!profile?.temp_slug) return;
+    const slug = profile?.temp_slug || pendingPreviewSlug;
+    if (!slug) return;
+
+    const targetUrl = `/temp/${slug}`;
+    if (typeof window !== "undefined") {
+      localStorage.setItem("iccha_auth_redirect", targetUrl);
+    }
 
     const user = await getCurrentUser();
     if (user) {
-      if (!profile.user_id) {
+      if (profile && !profile.user_id) {
         const updated = { ...profile, user_id: user.id, user_email: user.email };
         setProfile(updated);
         void fetch("/api/db/sync", {
@@ -244,15 +252,16 @@ function VoiceAssistantInner({
           body: JSON.stringify({ profile: updated }),
         }).catch(() => {});
       }
-      window.open(`/temp/${profile.temp_slug}`, "_blank");
+      router.push(targetUrl);
     } else {
-      setPendingPreviewSlug(profile.temp_slug);
+      setPendingPreviewSlug(slug);
       setIsAuthOpen(true);
     }
   };
 
   const handleAuthSuccess = (user: AuthUser) => {
     setCurrentUser(user);
+    const s = profile?.temp_slug || pendingPreviewSlug;
     if (profile) {
       const updated = { ...profile, user_id: user.id, user_email: user.email };
       setProfile(updated);
@@ -262,16 +271,14 @@ function VoiceAssistantInner({
         body: JSON.stringify({ profile: updated }),
       }).catch(() => {});
     }
-    const s = pendingPreviewSlug || profile?.temp_slug;
     setIsAuthOpen(false);
     if (s) {
-      window.open(`/temp/${s}`, "_blank");
+      router.push(`/temp/${s}`);
     }
   };
 
   const handleAuthClose = () => {
     setIsAuthOpen(false);
-    // Strict privacy: never open preview or save draft without authentication!
   };
 
   const toggleMic = async () => {
@@ -604,7 +611,7 @@ function VoiceAssistantInner({
           onSuccess={handleAuthSuccess}
           title="Google से लॉगिन करें और वेबसाइट सुरक्षित करें"
           subtitle="लॉगिन करने से आपकी वेबसाइट सुरक्षित रहेगी और आप अपने व्यापारी डैशबोर्ड में कभी भी इसे देख, एडिट और मंज़ूर कर सकेंगे।"
-          redirectAfterLogin={pendingPreviewSlug ? `/temp/${pendingPreviewSlug}` : undefined}
+          redirectAfterLogin={profile?.temp_slug ? `/temp/${profile.temp_slug}` : (pendingPreviewSlug ? `/temp/${pendingPreviewSlug}` : undefined)}
         />
       </div>
     );
@@ -816,7 +823,7 @@ function VoiceAssistantInner({
         onSuccess={handleAuthSuccess}
         title="Google से लॉगिन करें और वेबसाइट सुरक्षित करें"
         subtitle="लॉगिन करने से आपकी वेबसाइट सुरक्षित रहेगी और आप अपने व्यापारी डैशबोर्ड में कभी भी इसे देख, एडिट और मंज़ूर कर सकेंगे।"
-        redirectAfterLogin={pendingPreviewSlug ? `/temp/${pendingPreviewSlug}` : undefined}
+        redirectAfterLogin={profile?.temp_slug ? `/temp/${profile.temp_slug}` : (pendingPreviewSlug ? `/temp/${pendingPreviewSlug}` : undefined)}
       />
     </div>
   );

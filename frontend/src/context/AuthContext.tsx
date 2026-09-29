@@ -41,16 +41,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Subscribe to Supabase auth state changes (handles OAuth callback automatically)
       unsubscribe = onAuthStateChange((u) => {
         setUser(u);
-        // If user just logged in and there's a pending redirect, navigate there
-        if (u && typeof window !== "undefined") {
-          const pendingRedirect = localStorage.getItem("iccha_auth_redirect");
-          if (pendingRedirect) {
-            localStorage.removeItem("iccha_auth_redirect");
-            if (window.location.pathname !== pendingRedirect) {
-              window.location.replace(pendingRedirect);
-            }
-          }
-        }
       });
     };
 

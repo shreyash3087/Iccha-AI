@@ -132,7 +132,11 @@ export function AuthModal({
     setLoading(true);
     setErrorMsg(null);
     try {
-      const target = redirectAfterLogin || (typeof window !== "undefined" ? window.location.pathname + window.location.search : "/dashboard");
+      const storedRedirect = typeof window !== "undefined" ? localStorage.getItem("iccha_auth_redirect") : null;
+      let target = redirectAfterLogin || storedRedirect;
+      if (!target || target === "/call" || target === "/login" || target === "/") {
+        target = redirectAfterLogin || (typeof window !== "undefined" ? window.location.pathname + window.location.search : "/dashboard");
+      }
       if (typeof window !== "undefined") {
         localStorage.setItem("iccha_auth_redirect", target);
       }
