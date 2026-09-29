@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { spawn } from "child_process";
+import fs from "fs/promises";
+import os from "os";
 import path from "path";
 
 export async function POST(req: NextRequest) {
@@ -32,65 +34,86 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing image data" }, { status: 400 });
     }
 
-    // Call Python backend vision extraction tool if locally available, otherwise fallback to Groq Vision
     let items: any[] = [];
-    const apiKey = process.env.GROQ_API_KEY;
+    const tmpFile = path.join(
+      os.tmpdir(),
+      `iccha_vis_${Date.now()}_${Math.random().toString(36).slice(2)}.json`
+    );
 
     try {
+      await fs.writeFile(
+        tmpFile,
+        JSON.stringify({
+          image: imageBase64,
+          mime_type: mimeType,
+          business_type: businessType,
+        }),
+        "utf-8"
+      );
+
       const backendDir = path.resolve(process.cwd(), "..", "backend");
+      const livekitUrl = process.env.LIVEKIT_URL || process.env.NEXT_PUBLIC_LIVEKIT_URL;
+
       items = await new Promise<any[]>((resolve) => {
-        const py = spawn("uv", ["run", "python", "-m", "iccha.tools.vision_cli"], {
+        const py = spawn("uv", ["run", "python", "-m", "iccha.tools.vision_cli", tmpFile], {
           cwd: backendDir,
-          env: { ...process.env },
+          env: {
+            ...process.env,
+            ...(livekitUrl ? { LIVEKIT_URL: livekitUrl } : {}),
+            PYTHONIOENCODING: "utf-8",
+            PYTHONUTF8: "1",
+          },
         });
 
         let stdout = "";
         let stderr = "";
 
+        py.stdout.setEncoding("utf-8");
+        py.stderr.setEncoding("utf-8");
+
         py.stdout.on("data", (chunk) => {
-          stdout += chunk.toString();
+          stdout += chunk;
         });
 
         py.stderr.on("data", (chunk) => {
-          stderr += chunk.toString();
+          stderr += chunk;
         });
 
         py.on("close", (code) => {
           if (code !== 0) {
+            console.error("[Vision API] Python runner error code:", code, stderr);
             resolve([]);
             return;
           }
           try {
             const parsed = JSON.parse(stdout.trim() || "[]");
             resolve(Array.isArray(parsed) ? parsed : []);
-          } catch {
+          } catch (err) {
+            console.error("[Vision API] JSON parse error:", err, stdout);
             resolve([]);
           }
         });
 
-        py.on("error", () => {
+        py.on("error", (err) => {
+          console.error("[Vision API] Spawn error:", err);
           resolve([]);
         });
-
-        const payload = JSON.stringify({
-          image: imageBase64,
-          mime_type: mimeType,
-          business_type: businessType,
-        });
-        py.stdin.write(payload);
-        py.stdin.end();
       });
-    } catch {
+    } catch (spawnErr) {
+      console.error("[Vision API] Exception in spawn:", spawnErr);
       items = [];
+    } finally {
+      await fs.unlink(tmpFile).catch(() => {});
     }
 
-    // Cloud fallback on Vercel/serverless using Groq Vision API directly
-    if (items.length === 0 && apiKey) {
+    // Optional cloud fallback if local python runner is not available (e.g., Vercel serverless)
+    const groqKey = process.env.GROQ_API_KEY;
+    if (items.length === 0 && groqKey) {
       try {
         const visionRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${apiKey}`,
+            Authorization: `Bearer ${groqKey}`,
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
@@ -124,7 +147,7 @@ export async function POST(req: NextRequest) {
           }
         }
       } catch (cloudErr) {
-        console.warn("[Vision API] Groq cloud fallback error:", cloudErr);
+        console.warn("[Vision API] Cloud fallback error:", cloudErr);
       }
     }
 

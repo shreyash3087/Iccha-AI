@@ -10,8 +10,16 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+from pathlib import Path
 from typing import Any
+from dotenv import load_dotenv
+
+# Ensure credentials from .env.local are loaded if not already in environment
+_backend_dir = Path(__file__).resolve().parent.parent.parent.parent
+load_dotenv(_backend_dir / ".env.local")
+load_dotenv(_backend_dir / ".env")
 
 from livekit.agents import inference
 from livekit.agents.llm import ChatContext, ImageContent
@@ -89,17 +97,25 @@ async def extract_offerings_from_image(
             if chunk.delta and chunk.delta.content:
                 full_response += chunk.delta.content
 
-        logger.debug("Raw vision LLM response: %s", full_response[:300])
+        logger.info("Raw vision LLM response: %s", full_response[:300])
 
         # Strip markdown fences if present
         clean_json = full_response.strip()
         match = re.search(r"\[.*\]", clean_json, re.DOTALL)
         if match:
             clean_json = match.group(0)
+        else:
+            logger.warning("No JSON array pattern found in vision response: %s", clean_json[:200])
+            return []
 
-        data = json.loads(clean_json)
+        try:
+            data = json.loads(clean_json)
+        except Exception as err:
+            logger.warning("Failed to decode JSON from vision response: %s", err)
+            return []
+
         if not isinstance(data, list):
-            logger.warning("Vision response was not a JSON list: %s", clean_json)
+            logger.warning("Vision response was not a JSON list: %s", clean_json[:200])
             return []
 
         offerings: list[OfferingItem] = []
