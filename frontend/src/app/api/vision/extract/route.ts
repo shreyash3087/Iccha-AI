@@ -162,7 +162,7 @@ export async function POST(req: NextRequest) {
           const gemData = await gemRes.json();
           const content = gemData.candidates?.[0]?.content?.parts?.[0]?.text || "";
           const cleaned = content.replace(/```json/g, "").replace(/```/g, "").trim();
-          const match = cleaned.match(/\[.*\]/s);
+          const match = cleaned.match(/\[[\s\S]*\]/);
           if (match) {
             const parsed = JSON.parse(match[0]);
             if (Array.isArray(parsed)) {
