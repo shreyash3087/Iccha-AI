@@ -80,6 +80,10 @@ def _start_health_server() -> None:
     Start a minimal HTTP health-check server when running on cloud platforms
     (such as Render Web Service Free tier) that define a $PORT environment variable.
     Allows running the LiveKit worker as a free Web Service on Render ($0/mo).
+
+    Routes:
+      GET  /         → health check  {"status": "ok"}
+      POST /vision   → vision extraction endpoint for Vercel frontend fallback
     """
     port_str = os.environ.get("PORT")
     if not port_str:
@@ -87,6 +91,7 @@ def _start_health_server() -> None:
     try:
         from http.server import HTTPServer, BaseHTTPRequestHandler
         import threading
+        import asyncio
 
         port = int(port_str)
 
@@ -94,8 +99,63 @@ def _start_health_server() -> None:
             def do_GET(self):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 self.wfile.write(b'{"status":"ok","service":"iccha-backend"}\n')
+
+            def do_OPTIONS(self):
+                self.send_response(204)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+                self.end_headers()
+
+            def do_POST(self):
+                if self.path != "/vision":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    raw = self.rfile.read(length)
+                    body = json.loads(raw.decode("utf-8"))
+
+                    image_data = body.get("image", "")
+                    mime_type = body.get("mime_type", "image/jpeg")
+                    business_type = body.get("business_type", "general")
+
+                    if not image_data:
+                        self._send_json(400, {"error": "Missing image"})
+                        return
+
+                    from iccha.tools.vision import extract_offerings_from_image
+
+                    loop = asyncio.new_event_loop()
+                    try:
+                        items = loop.run_until_complete(
+                            extract_offerings_from_image(
+                                image_data,
+                                mime_type=mime_type,
+                                business_type=business_type,
+                            )
+                        )
+                    finally:
+                        loop.close()
+
+                    output = [it.model_dump() for it in items]
+                    self._send_json(200, {"success": True, "items": output})
+                except Exception as exc:
+                    logger.exception("Vision endpoint error: %s", exc)
+                    self._send_json(500, {"error": str(exc)})
+
+            def _send_json(self, code: int, data: dict) -> None:
+                body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(body)
 
             def log_message(self, format, *args):
                 pass  # Suppress health check log spam
@@ -103,9 +163,13 @@ def _start_health_server() -> None:
         httpd = HTTPServer(("0.0.0.0", port), HealthHandler)
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
         thread.start()
-        logger.info("Started HTTP health check server on port %d for cloud Web Service", port)
+        logger.info(
+            "Started HTTP server on port %d (GET / health, POST /vision extraction)",
+            port,
+        )
     except Exception as e:
         logger.warning("Failed to start health check server on port %s: %s", port_str, e)
+
 
 
 _start_health_server()

@@ -4,6 +4,12 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 
+const VISION_PROMPT = `You are an expert OCR and business catalog extractor for Indian small businesses.
+Analyze the attached image and extract all products or services listed.
+Return ONLY a valid JSON array of objects without any markdown formatting or explanations:
+[{"name":"...","price":100,"unit":"kg","item_type":"product","description":null}]
+Keys: name (string), price (number or null), unit (string or null), item_type ("product" or "service"), description (string or null).`;
+
 export async function POST(req: NextRequest) {
   try {
     let imageBase64 = "";
@@ -35,6 +41,8 @@ export async function POST(req: NextRequest) {
     }
 
     let items: any[] = [];
+
+    // ── Path 1: Local Python subprocess (works on dev / self-hosted) ──────────
     const tmpFile = path.join(
       os.tmpdir(),
       `iccha_vis_${Date.now()}_${Math.random().toString(36).slice(2)}.json`
@@ -43,11 +51,7 @@ export async function POST(req: NextRequest) {
     try {
       await fs.writeFile(
         tmpFile,
-        JSON.stringify({
-          image: imageBase64,
-          mime_type: mimeType,
-          business_type: businessType,
-        }),
+        JSON.stringify({ image: imageBase64, mime_type: mimeType, business_type: businessType }),
         "utf-8"
       );
 
@@ -71,17 +75,12 @@ export async function POST(req: NextRequest) {
         py.stdout.setEncoding("utf-8");
         py.stderr.setEncoding("utf-8");
 
-        py.stdout.on("data", (chunk) => {
-          stdout += chunk;
-        });
-
-        py.stderr.on("data", (chunk) => {
-          stderr += chunk;
-        });
+        py.stdout.on("data", (chunk) => { stdout += chunk; });
+        py.stderr.on("data", (chunk) => { stderr += chunk; });
 
         py.on("close", (code) => {
           if (code !== 0) {
-            console.error("[Vision API] Python runner error code:", code, stderr);
+            console.error("[Vision API] Python runner exit code:", code, stderr.slice(0, 300));
             resolve([]);
             return;
           }
@@ -89,13 +88,13 @@ export async function POST(req: NextRequest) {
             const parsed = JSON.parse(stdout.trim() || "[]");
             resolve(Array.isArray(parsed) ? parsed : []);
           } catch (err) {
-            console.error("[Vision API] JSON parse error:", err, stdout);
+            console.error("[Vision API] JSON parse error:", err, stdout.slice(0, 200));
             resolve([]);
           }
         });
 
         py.on("error", (err) => {
-          console.error("[Vision API] Spawn error:", err);
+          console.error("[Vision API] Spawn error:", err.message);
           resolve([]);
         });
       });
@@ -106,55 +105,81 @@ export async function POST(req: NextRequest) {
       await fs.unlink(tmpFile).catch(() => {});
     }
 
-    // Optional cloud fallback if local python runner is not available (e.g., Vercel serverless)
-    const groqKey = process.env.GROQ_API_KEY;
-    if (items.length === 0 && groqKey) {
+    // ── Path 2: Backend Render HTTP endpoint (works on Vercel/serverless) ────
+    const backendUrl = process.env.BACKEND_URL; // e.g. https://iccha-ai.onrender.com
+    if (items.length === 0 && backendUrl) {
       try {
-        const visionRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        console.log("[Vision API] Falling back to backend HTTP endpoint:", backendUrl);
+        const vRes = await fetch(`${backendUrl}/vision`, {
           method: "POST",
-          headers: {
-            Authorization: `Bearer ${groqKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: "llama-3.2-11b-vision-preview",
-            messages: [
-              {
-                role: "user",
-                content: [
-                  {
-                    type: "text",
-                    text: `You are an OCR and catalog extractor for Indian retail shops and restaurants. Extract all items/services from the image. Return ONLY a valid JSON array of objects with keys: "name" (string), "price" (number or null), "unit" (string or null), "item_type" ("product" or "service"), "description" (string or null). No markdown, no commentary, just the JSON array.`,
-                  },
-                  {
-                    type: "image_url",
-                    image_url: { url: imageBase64 },
-                  },
-                ],
-              },
-            ],
-            temperature: 0.1,
-          }),
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image: imageBase64, mime_type: mimeType, business_type: businessType }),
+          signal: AbortSignal.timeout(55000), // 55s — Vercel max is 60s
         });
 
-        if (visionRes.ok) {
-          const vData = await visionRes.json();
-          const content = vData.choices?.[0]?.message?.content || "";
-          const cleaned = content.replace(/```json/g, "").replace(/```/g, "").trim();
-          const parsed = JSON.parse(cleaned);
-          if (Array.isArray(parsed)) {
-            items = parsed;
+        if (vRes.ok) {
+          const vData = await vRes.json();
+          if (Array.isArray(vData.items)) {
+            items = vData.items;
+            console.log("[Vision API] Backend fallback returned", items.length, "items");
           }
+        } else {
+          const errText = await vRes.text();
+          console.warn("[Vision API] Backend fallback HTTP error:", vRes.status, errText.slice(0, 200));
         }
-      } catch (cloudErr) {
-        console.warn("[Vision API] Cloud fallback error:", cloudErr);
+      } catch (backendErr: any) {
+        console.warn("[Vision API] Backend fallback failed:", backendErr?.message || backendErr);
       }
     }
 
-    return NextResponse.json({
-      success: true,
-      items,
-    });
+    // ── Path 3: Gemini REST API (works if GEMINI_API_KEY is set in Vercel env) ──
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (items.length === 0 && geminiKey) {
+      try {
+        console.log("[Vision API] Falling back to Gemini REST API");
+        // Strip data URI prefix to get pure base64
+        const b64 = imageBase64.includes(",") ? imageBase64.split(",")[1] : imageBase64;
+
+        const gemRes = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{
+                parts: [
+                  { text: `${VISION_PROMPT}\n\nContext: business type is '${businessType}'. Extract up to 10 items.` },
+                  { inline_data: { mime_type: mimeType, data: b64 } },
+                ],
+              }],
+              generationConfig: { temperature: 0.1 },
+            }),
+            signal: AbortSignal.timeout(30000),
+          }
+        );
+
+        if (gemRes.ok) {
+          const gemData = await gemRes.json();
+          const content = gemData.candidates?.[0]?.content?.parts?.[0]?.text || "";
+          const cleaned = content.replace(/```json/g, "").replace(/```/g, "").trim();
+          const match = cleaned.match(/\[.*\]/s);
+          if (match) {
+            const parsed = JSON.parse(match[0]);
+            if (Array.isArray(parsed)) {
+              items = parsed;
+              console.log("[Vision API] Gemini fallback returned", items.length, "items");
+            }
+          }
+        } else {
+          const errText = await gemRes.text();
+          console.warn("[Vision API] Gemini fallback error:", gemRes.status, errText.slice(0, 200));
+        }
+      } catch (gemErr: any) {
+        console.warn("[Vision API] Gemini fallback failed:", gemErr?.message || gemErr);
+      }
+    }
+
+    return NextResponse.json({ success: true, items });
   } catch (error) {
     console.error("[Vision API] Exception:", error);
     return NextResponse.json(
