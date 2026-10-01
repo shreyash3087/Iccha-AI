@@ -54,7 +54,6 @@ from livekit.agents import (
     inference,
 )
 from livekit.plugins import smallestai
-from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from iccha.agent import IcchaAgent
 from iccha.config import get_settings
@@ -160,7 +159,10 @@ def _start_health_server() -> None:
             def log_message(self, format, *args):
                 pass  # Suppress health check log spam
 
-        httpd = HTTPServer(("0.0.0.0", port), HealthHandler)
+        class ReusableHTTPServer(HTTPServer):
+            allow_reuse_address = True
+
+        httpd = ReusableHTTPServer(("0.0.0.0", port), HealthHandler)
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
         thread.start()
         logger.info(
@@ -171,8 +173,10 @@ def _start_health_server() -> None:
         logger.warning("Failed to start health check server on port %s: %s", port_str, e)
 
 
+import multiprocessing
 
-_start_health_server()
+if multiprocessing.current_process().name == "MainProcess":
+    _start_health_server()
 
 # ── AgentServer ──────────────────────────────────────────────────────────────
 #
@@ -234,13 +238,7 @@ async def iccha_session(ctx: JobContext) -> None:
         ),
         # ── Turn Handling ─────────────────────────────────────────────────
         turn_handling=TurnHandlingOptions(
-            # MultilingualModel: trained on 14 languages including Hindi.
-            # Published benchmark: 99.4% TPR, 96.3% TNR on Hindi.
-            # Dynamic (EMA-based) endpointing adapts to each caller's own
-            # natural pause rhythm instead of a fixed silence threshold.
-            turn_detection=MultilingualModel(),
-            # Preemptive generation: LLM starts generating while the turn
-            # detector is still deciding - saves 100-200ms on most turns.
+            # Preemptive generation: LLM starts generating while deciding - saves 100-200ms
             preemptive_generation={"enabled": True},
         ),
         # expressive=False: cleaner latency baseline; no markup overhead.
