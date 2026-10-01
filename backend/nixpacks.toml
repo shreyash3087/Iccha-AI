@@ -1,9 +1,0 @@
-[phases.setup]
-nixPkgs = ["python311"]
-cmds = ["pip install uv"]
-
-[phases.install]
-cmds = ["uv sync --no-dev"]
-
-[start]
-cmd = "uv run python -m iccha.server start"
