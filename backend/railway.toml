@@ -1,0 +1,7 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "uv run python -m livekit.agents download-files && uv run python -m iccha.server start"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
