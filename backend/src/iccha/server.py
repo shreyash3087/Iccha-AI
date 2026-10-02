@@ -328,13 +328,16 @@ async def iccha_session(ctx: JobContext) -> None:
 
             if msg_type == "IMAGE_UPLOAD_STARTED":
                 logger.info("Image upload started from frontend")
-                session.generate_reply(
-                    instructions=(
-                        "The shopkeeper just uploaded an image/photo of their menu or rate list. "
-                        "Acknowledge immediately in respectful Hindi using feminine grammar: "
-                        "'धन्यवाद! मैं अभी इसको देखकर लिस्ट तैयार कर रही हूँ, एक सेकंड रुकिए...'"
+                try:
+                    session.generate_reply(
+                        instructions=(
+                            "The shopkeeper just uploaded an image/photo of their menu or rate list. "
+                            "Acknowledge immediately in respectful Hindi using feminine grammar: "
+                            "'धन्यवाद! मैं अभी इसको देखकर लिस्ट तैयार कर रही हूँ, एक सेकंड रुकिए...'"
+                        )
                     )
-                )
+                except Exception as gen_err:
+                    logger.warning("Error generating upload acknowledgement reply: %s", gen_err)
 
             elif msg_type == "IMAGE_ITEMS_EXTRACTED":
                 items = data.get("items", [])
@@ -357,13 +360,16 @@ async def iccha_session(ctx: JobContext) -> None:
                     asyncio.create_task(agent._broadcast_profile(room_override=ctx.room))
 
                     names_preview = ", ".join(it["name"] for it in items[:3])
-                    session.generate_reply(
-                        instructions=(
-                            f"We have successfully extracted {len(items)} items from their uploaded image ({names_preview}). "
-                            "In warm Hindi using feminine grammar, tell them you have added these items to their website preview, "
-                            "mention two or three of the items, and ask if they want to add anything else or proceed to shop timings."
+                    try:
+                        session.generate_reply(
+                            instructions=(
+                                f"We have successfully extracted {len(items)} items from their uploaded image ({names_preview}). "
+                                "In warm Hindi using feminine grammar, tell them you have added these items to their website preview, "
+                                "mention two or three of the items, and ask if they want to add anything else or proceed to shop timings."
+                            )
                         )
-                    )
+                    except Exception as gen_err:
+                        logger.warning("Error generating items extracted reply: %s", gen_err)
 
             elif msg_type == "SELECT_GOOGLE_PLACE":
                 candidate_index = int(data.get("candidate_index", 1)) - 1

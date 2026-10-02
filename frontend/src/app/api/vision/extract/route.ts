@@ -105,16 +105,17 @@ export async function POST(req: NextRequest) {
       await fs.unlink(tmpFile).catch(() => {});
     }
 
-    // ── Path 2: Backend Render HTTP endpoint (works on Vercel/serverless) ────
-    const backendUrl = process.env.BACKEND_URL; // e.g. https://iccha-ai.onrender.com
+    // ── Path 2: Backend Railway / Render HTTP endpoint (works on Vercel/serverless) ────
+    const rawBackendUrl = process.env.BACKEND_URL || process.env.NEXT_PUBLIC_BACKEND_URL;
+    const backendUrl = rawBackendUrl?.trim().replace(/\/+$/, "");
     if (items.length === 0 && backendUrl) {
       try {
-        console.log("[Vision API] Falling back to backend HTTP endpoint:", backendUrl);
+        console.log("[Vision API] Calling backend HTTP endpoint:", `${backendUrl}/vision`);
         const vRes = await fetch(`${backendUrl}/vision`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ image: imageBase64, mime_type: mimeType, business_type: businessType }),
-          signal: AbortSignal.timeout(55000), // 55s — Vercel max is 60s
+          signal: AbortSignal.timeout(30000),
         });
 
         if (vRes.ok) {
