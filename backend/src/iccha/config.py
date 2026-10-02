@@ -98,6 +98,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("SMALLEST_AI_API_KEY", "SMALLEST_API_KEY"),
         description="Smallest.ai API key — TTS benchmarking in Phase 2.",
     )
+    cartesia_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("CARTESIA_API_KEY"),
+        description="Cartesia API key — real-time expressive TTS for Hindi/English.",
+    )
     unsplash_access_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices("UNSPLASH_ACCESS_KEY", "UNSPLASH_KEY"),

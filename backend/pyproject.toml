@@ -13,6 +13,7 @@ dependencies = [
     # LiveKit Agents core framework
     "livekit-agents~=1.8",
     # Turn detector — MultilingualModel for Hindi-optimised endpointing
+    "livekit-plugins-cartesia>=1.8.2",
     "livekit-plugins-openai>=1.8.2",
     "livekit-plugins-smallestai>=1.8.2",
     "livekit-plugins-turn-detector",

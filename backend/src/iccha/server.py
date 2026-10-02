@@ -53,7 +53,7 @@ from livekit.agents import (
     cli,
     inference,
 )
-from livekit.plugins import smallestai
+from livekit.plugins import cartesia, smallestai
 
 from iccha.agent import IcchaAgent
 from iccha.config import get_settings
@@ -188,6 +188,8 @@ settings = get_settings()
 # Propagate keys to os.environ so plugins that look for standard env var names find them
 if settings.smallest_ai_api_key:
     os.environ["SMALLEST_API_KEY"] = settings.smallest_ai_api_key
+if settings.cartesia_api_key:
+    os.environ["CARTESIA_API_KEY"] = settings.cartesia_api_key
 if settings.deepgram_api_key:
     os.environ["DEEPGRAM_API_KEY"] = settings.deepgram_api_key
 if settings.groq_api_key:
@@ -220,6 +222,15 @@ async def iccha_session(ctx: JobContext) -> None:
 
     logger.info("Session started | room=%s", ctx.room.name)
 
+    # ── TTS: Smallest.ai Lightning via persistent WebSocket streaming ─
+    # Sub-100ms real-time audio chunk streaming over wss://api.smallest.ai/waves/v1/tts/live
+    tts_engine = smallestai.TTS(
+        api_key=settings.smallest_ai_api_key or os.getenv("SMALLEST_API_KEY"),
+        model="lightning_v3.1",
+        voice_id="sunidhi",
+        language="hi",
+    )
+
     session = AgentSession(
         # ── STT ──────────────────────────────────────────────────────────
         # Phase 2 winner: Deepgram Nova-3 (844ms vs 3546ms for AssemblyAI)
@@ -228,14 +239,8 @@ async def iccha_session(ctx: JobContext) -> None:
             model="deepgram/nova-3",
             language="multi",
         ),
-        # ── TTS: Smallest.ai Lightning via persistent WebSocket streaming ─
-        # Sub-100ms real-time audio chunk streaming over wss://api.smallest.ai/waves/v1/tts/live
-        tts=smallestai.TTS(
-            api_key=settings.smallest_ai_api_key or os.getenv("SMALLEST_API_KEY"),
-            model="lightning_v3.1",
-            voice_id="sunidhi",
-            language="hi",
-        ),
+        # ── TTS ──────────────────────────────────────────────────────────
+        tts=tts_engine,
         # ── Turn Handling ─────────────────────────────────────────────────
         turn_handling=TurnHandlingOptions(
             # Preemptive generation: LLM starts generating while deciding - saves 100-200ms
